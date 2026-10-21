@@ -1,0 +1,136 @@
+# -----------------------------
+# Module 4/6: Networking + Load Balancing
+# Uses the account's default VPC/subnets throughout the course -
+# no custom VPC, NAT gateway, or private subnets are created.
+# -----------------------------
+
+data "aws_caller_identity" "current" {}
+
+data "aws_vpc" "default" {
+  default = true
+}
+
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
+resource "aws_security_group" "ec2_sg" {
+  name        = "rock-of-ages-ec2-sg"
+  description = "Allow SSH and HTTP"
+  vpc_id      = data.aws_vpc.default.id
+
+  ingress {
+    description = "Allow SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description     = "Allow HTTP from the ALB"
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb_sg.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "alb_sg" {
+  name        = "rock-of-ages-alb-sg"
+  description = "Allow HTTP traffic to ALB"
+  vpc_id      = data.aws_vpc.default.id
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "rock-of-ages-alb-sg" }
+}
+
+resource "aws_security_group" "rds_sg" {
+  name        = "rock-of-ages-db-sg"
+  description = "Allow PostgreSQL connections for Rock of Ages course"
+  vpc_id      = data.aws_vpc.default.id
+
+  ingress {
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # open for workshop/demo purposes
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "rock-of-ages-db-sg" }
+}
+
+resource "aws_db_subnet_group" "rock_of_ages" {
+  name       = "rock-of-ages-subnet-group"
+  subnet_ids = data.aws_subnets.default.ids
+  tags       = { Name = "rock-of-ages-db-subnet-group" }
+}
+
+resource "aws_lb" "application_load_balancer" {
+  name               = "rock-of-ages-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb_sg.id]
+  subnets            = data.aws_subnets.default.ids
+  tags               = { Name = "rock-of-ages-alb" }
+}
+
+resource "aws_lb_target_group" "api_tg" {
+  name     = "rock-of-ages-api-tg"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = data.aws_vpc.default.id
+
+  health_check {
+    path                = "/health/"
+    protocol            = "HTTP"
+    matcher             = "200"
+    interval            = 15
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+
+  tags = { Name = "rock-of-ages-api-tg" }
+}
+
+resource "aws_lb_listener" "http_listener" {
+  load_balancer_arn = aws_lb.application_load_balancer.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.api_tg.arn
+  }
+}
